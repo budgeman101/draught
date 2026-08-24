@@ -1,113 +1,62 @@
-/* main.ts — boot. Wires every piece of the kit to a game that actually runs.
+/* main.ts — boot. One screen, three verbs, no goal.
 
-   DELETE-AS-YOU-GO: this example exists so a fresh project shows something alive
-   in seconds and so every wire in the stack is proven before you write a line.
-   Replace sim.ts / view.ts / cfg.ts with your game and keep the scaffolding.
-
-   The shape to keep:
-     loop.update  -> scenes.update -> sim only     (no drawing, no DOM)
-     loop.render  -> scenes.render -> app.render() (no rules, no mutation)
-     everything tunable                            -> cfg.ts
-     everything the player chose                   -> settings
-     everything worth reading later                -> log
-
-   Scenes own BOTH halves of a screen: ctx.el for chrome, ctx.layer for board
-   content. Both are destroyed on exit, so nothing leaks into the next screen.
-*/
+   Deliberately a sandbox: no menu, no score, no progression. The question this
+   prototype exists to answer is whether shaping a route with doors, windows and
+   fans reads at all — and a goal on top would only make it harder to tell
+   whether the air itself is interesting. */
 
 import '../kit/theme.css';
-import { Application, Assets, type Texture } from 'pixi.js';
+import { Application } from 'pixi.js';
 
-import * as Audio from '../kit/audio.js';
-import { createCamera } from '../kit/camera.js';
-import { button, meter, modal, overlay, panel, readout, stage, toast } from '../kit/chrome.js';
+import { button, meter, overlay, panel, readout, stage, toast } from '../kit/chrome.js';
 import { installDbg } from '../kit/dbg.js';
 import { installErrorBanner } from '../kit/errors.js';
 import { hubRemote } from '../kit/hubsave.js';
 import { createInspector } from '../kit/inspector.js';
 import { createLoop } from '../kit/loop.js';
 import { createLog } from '../kit/log.js';
-import { seedWord } from '../kit/rng.js';
 import { createStore } from '../kit/save.js';
 import { createScenes, type SceneContext } from '../kit/scenes.js';
 import { createSettings } from '../kit/settings.js';
 
 import { CFG } from './cfg.js';
-import { createSim, lapProgress, resetSim, tick, type Sim } from './sim.js';
+import { distanceToAperture, opennessAt } from './layout.js';
+import {
+  applyApertures, clearFans, clearScent, createSim, cycleFan, removeFanAt, resetSim,
+  setApertureOpen, stillAir, tick, zoneScent, type Dir, type Sim,
+} from './sim.js';
 import { createView, type View } from './view.js';
-
-import moteUrl from '../assets/mote.png';
-import pingUrl from '../assets/ping.wav';
 
 installErrorBanner();
 
-/* ── persistence ────────────────────────────────────────────────────────────
-   version 2 with a real migration, so the mechanism is proven, not described.
-
-   AND IT SYNCS. `remote` is what makes the save follow the PERSON rather than
-   live in one browser: the hub keys it by tailnet login and profile, so this
-   game picked up on a phone is the same game you left on the desktop. It is here
-   from the first minute deliberately — a save that syncs is what a game IS, not
-   a capability to discover and retrofit once two devices have already disagreed.
-   IndexedDB stays underneath as the local copy.
-
-   No slug argument: the project's name on the hub comes from project.mjs. A
-   PROFILE argument is the real per-game decision — `hubRemote(profileFromUrl('sam'))`
-   for a game with a default player. See src/kit/hubsave.ts, and the README. */
 const remote = hubRemote();
 
 const store = createStore({
-  key: 'template',
-  version: 2,
+  key: 'draught',
+  version: 1,
   remote,
-  defaults: { totalLaps: 0, bestSession: 0, lastSeed: '', camera: { x: 0, y: 0, zoom: 1 } },
-  migrate: {
-    2: (d) => {
-      if (d.laps !== undefined) { d.totalLaps = d.laps; delete d.laps; }   // v1 called it `laps`
-      if (d.bestSession === undefined) d.bestSession = 0;
-      return d;
-    },
+  defaults: {
+    apertures: {} as Record<string, number>,
+    fans: [] as { i: number; j: number; dir: Dir }[],
   },
 });
 
 let currentView: View | null = null;
 
 const settings = createSettings({
-  key: 'template',
+  key: 'draught',
   schema: {
-    master: { type: 'range', label: 'Master volume', default: 0.7, min: 0, max: 1, step: 0.05,
-              format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => Audio.volume('master', v) },
-    sfx:    { type: 'range', label: 'Effects', default: 0.9, min: 0, max: 1, step: 0.05,
-              format: (v) => `${Math.round(v * 100)}%`, onChange: (v) => Audio.volume('sfx', v) },
-    muted:  { type: 'toggle', label: 'Mute', default: false, onChange: (v) => Audio.mute(v) },
-    trails: { type: 'toggle', label: 'Show trail', default: true, onChange: (v) => currentView?.setTrailVisible(v) },
+    arrows: {
+      type: 'toggle', label: 'Show airflow arrows', default: true,
+      onChange: (v) => currentView?.setArrowsVisible(v),
+    },
   },
 });
 
-const openSettings = () =>
-  modal({
-    title: 'Settings',
-    body: settings.panel({ title: null }),
-    actions: [{ id: 'close', label: 'Close', variant: 'primary' }],
-  }).show();
-
 async function boot() {
-  /* THE LOCK, made visible. Registered before load(), because load() is where
-     the claim happens. Two devices on one profile do not last-write-wins: the
-     second is refused and the store goes read-only, which is the right answer
-     and a baffling one if the game says nothing. Say something. */
-  store.on('error', (e: { reason: string; heldBy?: { device: string } }) => {
-    if (e.reason === 'held-elsewhere') {
-      toast(`Already open on ${e.heldBy?.device ?? 'another device'} — not saving here.`, { tone: 'warn' });
-    } else if (e.reason === 'taken-over') {
-      toast('Another device took over this save — not saving here any more.', { tone: 'warn' });
-    }
-  });
-
   await store.load();
-  await settings.load();          // reads AND applies — volumes reach the mixer
+  await settings.load();
 
-  /* ── the board: one Pixi app for the whole game ───────────────────────── */
   const root = document.getElementById('app')!;
   const canvas = document.createElement('canvas');
   root.appendChild(canvas);
@@ -117,210 +66,310 @@ async function boot() {
   const app = new Application();
   await app.init({
     canvas,
-    autoStart: false,            // our loop drives rendering, not Pixi's ticker
+    autoStart: false,
     antialias: true,
-    background: 0x080b11,
+    background: 0x05070a,
     resolution: Math.min(2, window.devicePixelRatio || 1),
     autoDensity: true,
-    width: host.clientWidth || 800,
-    height: host.clientHeight || 600,
+    width: host.clientWidth || 900,
+    height: host.clientHeight || 640,
   });
 
-  const texture: Texture = await Assets.load(moteUrl);
   const log = createLog({ build: import.meta.env.MODE });
-
-  const scenes = createScenes({ root: host, stage: app.stage, transition: 'fade', ms: 180 });
+  const scenes = createScenes({ root: host, stage: app.stage, transition: 'none' });
 
   const ro = new ResizeObserver(() => {
-    const w = host.clientWidth || 800, h = host.clientHeight || 600;
+    const w = host.clientWidth || 900, h = host.clientHeight || 640;
     app.renderer.resize(w, h);
     scenes.resize(w, h);
   });
   ro.observe(host);
 
-  Audio.load({ ping: pingUrl }).then((r) => {
-    if (!r.ok) console.warn('[game] audio missing:', r.failed);
-  });
-
-  /* ── menu ───────────────────────────────────────────────────────────────── */
-  scenes.add('menu', {
-    enter(ctx: SceneContext) {
-      const centre = overlay('center');
-      centre.append(
-        Object.assign(document.createElement('h1'), {
-          textContent: 'MOTES',
-          style: 'font:600 34px/1.1 var(--kit-font);letter-spacing:.18em;margin:0;text-align:center',
-        }),
-        panel({
-          title: null,
-          children: [
-            button({ label: 'Play', variant: 'primary', hotkey: 'enter', onClick: () => scenes.go('play') }),
-            button({ label: 'Settings', hotkey: 's', onClick: openSettings }),
-            readout({ label: 'All time', value: String(store.data.totalLaps) }),
-          ],
-        }),
-      );
-      ctx.el.append(centre);
-    },
-  });
-
-  /* ── play ───────────────────────────────────────────────────────────────── */
-  /* A FACTORY, not an object: it's re-invoked on every entry, so scene state
-     lives in a closure and starts clean each time. No `this`, nothing to reset
-     by hand, and no stale reference surviving into the next run. */
   scenes.add('play', () => {
     let sim: Sim;
     let view: View;
-    let cam: ReturnType<typeof createCamera>;
-    let hud: { rLaps: any; rTotal: any; mLap: any };
+    let defaults: Record<string, number> = {};
+    let gauges: { name: string; el: ReturnType<typeof meter> }[] = [];
+    let rSpeed: ReturnType<typeof readout>;
+    let detach: (() => void) | null = null;
+
+    /* The HUD is a COLUMN, not an overlay, wherever there is room for one: at
+       this plan's aspect ratio a floating panel always lands on top of a room.
+       Below that width the column would eat the board, so it goes back to
+       floating and the board gives up height instead. */
+    const SIDEBAR = 232;
+    const fitBoard = (w: number, h: number) => {
+      const wide = w >= 820;
+      view.fit(w, h, {
+        left: wide ? SIDEBAR + 20 : 12,
+        right: 12,
+        top: 56,
+        bottom: wide ? 12 : 20,
+      });
+    };
+
+    /* ── input ──────────────────────────────────────────────────────────────
+       One gesture does everything a door needs: press near it and drag along it
+       to set how far it is open, or press and release without moving to flick it
+       fully open or shut. Away from a door, a press is a fan. */
+    function wireInput(el: HTMLElement) {
+      let dragging: string | null = null;
+      let moved = false;
+      let downAt = { x: 0, y: 0 };
+
+      const world = (e: PointerEvent | MouseEvent) => {
+        const r = el.getBoundingClientRect();
+        return view.toWorld(e.clientX - r.left, e.clientY - r.top);
+      };
+      const nearest = (x: number, y: number, radius: number) => {
+        let best: string | null = null, bestD = radius;
+        for (const a of sim.layout.apertures) {
+          const d = distanceToAperture(a, x, y);
+          if (d < bestD) { bestD = d; best = a.id; }
+        }
+        return best;
+      };
+
+      const onDown = (e: PointerEvent) => {
+        if (e.button === 2) return;
+        const p = world(e);
+        const hit = nearest(p.x, p.y, 0.3);
+        downAt = { x: e.clientX, y: e.clientY };
+        moved = false;
+        if (hit) {
+          dragging = hit;
+          el.setPointerCapture(e.pointerId);
+          view.setHovered(hit);
+        } else {
+          const what = cycleFan(sim, p.x, p.y);
+          if (what === 'blocked') toast('A fan needs floor to stand on.', { ms: 1400 });
+          else commitFans();
+        }
+      };
+
+      const onMove = (e: PointerEvent) => {
+        const p = world(e);
+        if (!dragging) { view.setHovered(nearest(p.x, p.y, 0.3)); return; }
+        if (Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4) moved = true;
+        const a = sim.layout.apertures.find((q) => q.id === dragging);
+        if (!a) return;
+        setApertureOpen(sim, a.id, opennessAt(a, p.x, p.y));
+        view.rebuild();
+      };
+
+      const onUp = (e: PointerEvent) => {
+        if (dragging) {
+          const a = sim.layout.apertures.find((q) => q.id === dragging);
+          if (a && !moved) setApertureOpen(sim, a.id, a.open > 0 ? 0 : 1);
+          if (a) commitAperture(a.id);
+          try { el.releasePointerCapture(e.pointerId); } catch { /* already gone */ }
+        }
+        dragging = null;
+      };
+
+      const onLeave = () => { if (!dragging) view.setHovered(null); };
+
+      const onContext = (e: MouseEvent) => {
+        e.preventDefault();
+        const p = world(e);
+        if (removeFanAt(sim, p.x, p.y)) commitFans();
+      };
+
+      el.addEventListener('pointerdown', onDown);
+      el.addEventListener('pointermove', onMove);
+      el.addEventListener('pointerup', onUp);
+      el.addEventListener('pointercancel', onUp);
+      el.addEventListener('pointerleave', onLeave);
+      el.addEventListener('contextmenu', onContext);
+      return () => {
+        el.removeEventListener('pointerdown', onDown);
+        el.removeEventListener('pointermove', onMove);
+        el.removeEventListener('pointerup', onUp);
+        el.removeEventListener('pointercancel', onUp);
+        el.removeEventListener('pointerleave', onLeave);
+        el.removeEventListener('contextmenu', onContext);
+      };
+    }
+
+    /* ONE path for each change, so a test drives exactly what a finger drives.
+       These were separate at first and the reload test caught it: DBG.open()
+       moved the door and never wrote the save, which is a difference between
+       the tested game and the played one. */
+    const commitAperture = (id: string) => {
+      const a = sim.layout.apertures.find((q) => q.id === id);
+      if (!a) return;
+      store.data.apertures[id] = a.open;
+      store.touch();
+      view.rebuild();
+      log.event('aperture', { id, open: +a.open.toFixed(2) });
+    };
+    const commitFans = () => {
+      store.data.fans = sim.fans.map((f) => ({ ...f }));
+      store.touch();
+      view.rebuild();
+    };
 
     return {
-      // getters, so DBG.sim reaches the CURRENT scene's state
       get sim() { return sim; },
-      get cam() { return cam; },
+
+      setOpen(id: string, v: number) { setApertureOpen(sim, id, v); commitAperture(id); },
+      dropFan(x: number, y: number) { const r = cycleFan(sim, x, y); commitFans(); return r; },
 
       enter(ctx: SceneContext) {
-        const seed = store.data.lastSeed || seedWord();
-        store.data.lastSeed = seed;
-        store.save();
+        sim = createSim();
+        defaults = Object.fromEntries(sim.layout.apertures.map((a) => [a.id, a.open]));
 
-        sim = createSim(seed);
-        log.event('run-start', { seed });
+        for (const [id, open] of Object.entries(store.data.apertures)) {
+          const a = sim.layout.apertures.find((q) => q.id === id);
+          if (a) a.open = Math.max(0, Math.min(1, open));
+        }
+        for (const f of store.data.fans) if (!sim.f.solid[f.i + f.j * sim.W]) sim.fans.push({ ...f });
+        applyApertures(sim);
 
-        // the camera goes INSIDE the scene layer, so layer.destroy() tears the
-        // viewport down with everything else — no manual cam.destroy() needed
-        cam = createCamera(app, { minZoom: 0.3, maxZoom: 5 });
-        cam.fromJSON(store.data.camera);
-        ctx.layer.addChild(cam.viewport);
-
-        view = createView(cam.viewport, sim, texture);
-        view.setTrailVisible(settings.get('trails'));
+        view = createView(ctx.layer, sim);
+        view.setArrowsVisible(settings.get('arrows'));
         currentView = view;
+        fitBoard(host.clientWidth || 900, host.clientHeight || 640);
 
-        /* chrome — inside ctx.el, so it leaves when the scene does */
-        const rLaps = readout({ label: 'Laps', value: '0' });
-        const rTotal = readout({ label: 'All time', value: String(store.data.totalLaps) });
-        const rSeed = readout({ label: 'Seed', value: seed });
-        const topLeft = overlay('top-left', { row: true });
-        topLeft.append(rLaps, rTotal, rSeed);
-
-        const mLap = meter({ label: 'This lap', value: 0 });
-        const side = panel({ title: null, children: [mLap] });
-        side.style.width = '190px';
-        const bottomLeft = overlay('bottom-left');
-        bottomLeft.append(side);
-
+        /* ── chrome ─────────────────────────────────────────────────────── */
         const topRight = overlay('top-right', { row: true });
         topRight.append(
-          button({ label: 'Pause', hotkey: 'space', onClick: () => scenes.push('pause') }),
-          button({ label: 'Recentre', hotkey: 'c', onClick: () => { cam.setZoom(1).moveTo(0, 0); } }),
-          button({ label: 'Playtest log', variant: 'ghost', onClick: () => toast(`Saved ${log.download()}`, { tone: 'good' }) }),
+          button({
+            label: 'Arrows', hotkey: 'a',
+            onClick: () => { const v = !settings.get('arrows'); settings.set('arrows', v); },
+          }),
+          button({
+            label: 'Unit', hotkey: 'u',
+            onClick: () => {
+              sim.unitOn = !sim.unitOn;
+              applyApertures(sim);
+              toast(sim.unitOn ? 'Unit on.' : 'Unit off — the air will coast to a stop.', { ms: 1500 });
+            },
+          }),
+          button({ label: 'Clear fans', onClick: () => { clearFans(sim); view.rebuild(); store.data.fans = []; store.touch(); } }),
+          button({ label: 'Clear scent', onClick: () => clearScent(sim) }),
+          button({ label: 'Still air', variant: 'ghost', onClick: () => { stillAir(sim); clearScent(sim); } }),
         );
 
-        ctx.el.append(topLeft, bottomLeft, topRight);
-        hud = { rLaps, rTotal, mLap };
+        gauges = sim.layout.zones.map((z) => ({
+          name: z.name,
+          el: meter({ label: z.name, value: 0, format: (v) => `${Math.round(v * 100)}%` }),
+        }));
+        rSpeed = readout({ label: 'Fastest air', value: '0.00 m/s' });
+        const gaugePanel = panel({
+          title: 'Scent in the room',
+          open: (host.clientWidth || 900) >= 820,   // on a phone it starts as a strip, not a wall
+          children: [...gauges.map((g) => g.el), rSpeed],
+        });
+
+        const help = document.createElement('div');
+        help.style.cssText = 'font:400 12px/1.55 var(--kit-font);color:var(--kit-dim)';
+        help.innerHTML =
+          '<b style="color:var(--kit-ink)">Drag a door or window</b> along its length to set how far it is ' +
+          'open. Narrowing it makes the air move faster through the gap and passes less of it.<br><br>' +
+          '<b style="color:var(--kit-ink)">Click the floor</b> to drop a fan; click it again to turn it, and ' +
+          'once more from north to take it away.<br><br>' +
+          'The unit blows into the living room and the air leaves by the extract at the end of the hall. ' +
+          '<b style="color:var(--kit-ink)">A room only gets air if that air has somewhere to go</b> — open ' +
+          'its window, and the door beside it becomes a route.';
+        const helpPanel = panel({ title: 'How this works', open: false, children: [help] });
+
+        const sidebar = overlay('top-left');
+        sidebar.style.width = `${SIDEBAR}px`;
+        gaugePanel.style.width = '100%';
+        helpPanel.style.width = '100%';
+        sidebar.append(gaugePanel, helpPanel);
+
+        ctx.el.append(topRight, sidebar);
+        detach = wireInput(host);
       },
 
-      update(dt: number) {
-        tick(sim, dt);
-        cam.update(dt);
-
-        if (sim.lapJustCompleted) {
-          store.data.totalLaps++;
-          store.data.bestSession = Math.max(store.data.bestSession, sim.laps);
-          store.touch();
-          log.event('lap', { lap: sim.laps, t: +sim.t.toFixed(2) });
-          Audio.sfx('ping', { volume: 0.45, rate: 1 + (sim.laps % 5) * 0.05 });
-        }
-      },
+      update(dt: number) { tick(sim, dt); },
 
       render() {
         view.render();
-        hud.rLaps.set(sim.laps);
-        hud.rTotal.set(store.data.totalLaps);
-        hud.mLap.set(lapProgress(sim));
+        let fastest = 0;
+        for (const g of gauges) g.el.set(zoneScent(sim, g.name));
+        const { u, v } = sim.f;
+        for (let k = 0; k < u.length; k++) { const a = Math.abs(u[k]!); if (a > fastest) fastest = a; }
+        for (let k = 0; k < v.length; k++) { const a = Math.abs(v[k]!); if (a > fastest) fastest = a; }
+        rSpeed.set(`${fastest.toFixed(2)} m/s`);
       },
 
-      /** Reachable as DBG.reset() — a known state is what makes stepping reproducible. */
-      reset(seed?: string) { resetSim(sim, seed); },
+      resize(w: number, h: number) { fitBoard(w, h); },
 
-      exit() {
-        store.data.camera = cam.toJSON();
-        store.save();
-        currentView = null;
-        // view and camera live in ctx.layer; the scene destroys it for us
+      /** DBG.reset() — back to the house as authored, with still air. */
+      reset() {
+        resetSim(sim);
+        for (const a of sim.layout.apertures) a.open = defaults[a.id] ?? 0;
+        sim.unitOn = true;
+        applyApertures(sim);
+        view.rebuild();
       },
+
+      exit() { detach?.(); detach = null; currentView = null; },
     };
   });
 
-  /* ── pause: PUSHED over play, so the board stays mounted behind it ──────── */
-  scenes.add('pause', {
-    enter(ctx: SceneContext) {
-      loop.pause(true);
-      const centre = overlay('center');
-      centre.append(panel({
-        title: 'Paused',
-        children: [
-          button({ label: 'Resume', variant: 'primary', hotkey: 'space', onClick: () => scenes.back() }),
-          button({ label: 'Settings', onClick: openSettings }),
-          button({ label: 'Quit to menu', variant: 'ghost', onClick: () => scenes.go('menu') }),
-        ],
-      }));
-      ctx.el.append(centre);
-    },
-    exit() { loop.pause(false); },
-  });
-
-  /* ── the loop: one driver for sim and render ────────────────────────────── */
   const loop = createLoop({
-    fixed: 1 / 60,
+    fixed: 1 / CFG.simHz,
     update: (dt) => scenes.update(dt),
     render: (alpha) => { scenes.render(alpha); app.render(); },
   });
 
-  /* ── dev surfaces ───────────────────────────────────────────────────────── */
-  createInspector({
+  const inspector = createInspector({
     cfg: CFG,
     schema: {
-      orbitSpeed:  { min: 0, max: 4, step: 0.01 },
-      orbitRadius: { min: 20, max: 400, step: 1 },
-      trailLength: { min: 0, max: 200, step: 1 },
-      wobbleRate:  { min: 0, max: 12, step: 1 },
+      ventSpeed: { min: 0, max: 6, step: 0.1 },
+      fanForce: { min: 0, max: 40, step: 0.5 },
+      drag: { min: 0, max: 3, step: 0.05 },
+      projectIters: { min: 4, max: 80, step: 1 },
+      scentDecay: { min: 0, max: 1, step: 0.01 },
+      outdoorDecay: { min: 0, max: 4, step: 0.05 },
+      scentDiffuse: { min: 0, max: 0.25, step: 0.005 },
+      scentGamma: { min: 0.2, max: 2, step: 0.02 },
+      arrowScale: { min: 0.02, max: 0.5, step: 0.01 },
     },
     stats: {
       fps: () => loop.stats().fps,
-      ticks: () => loop.stats().ticks,
-      scene: () => scenes.current ?? '—',
-      laps: () => (scenes.active as any)?.sim?.laps ?? 0,
-      events: () => log.entries.length,
+      cells: () => { const s: Sim | null = (scenes.active as any)?.sim ?? null; return s ? s.W * s.H : 0; },
+      fans: () => ((scenes.active as any)?.sim?.fans.length ?? 0),
     },
   });
 
   installDbg({
     loop,
     expose: {
-      app, scenes, cfg: CFG, store, settings, log,
-      // live getters: installDbg uses defineProperties, so these re-evaluate
+      app, scenes, cfg: CFG, store, settings, log, inspector,
       get sim() { return (scenes.active as any)?.sim ?? null; },
-      get cam() { return (scenes.active as any)?.cam ?? null; },
-      reset: (seed?: string) => (scenes.active as any)?.reset?.(seed),
+      get view() { return currentView; },
+      /** Set a door or window from a test: DBG.open('d-bed', 0.15) */
+      open: (id: string, v: number) => (scenes.active as any)?.setOpen?.(id, v),
+      /** Drop, turn or take away a fan at a point in house metres. */
+      fan: (x: number, y: number) => (scenes.active as any)?.dropFan?.(x, y),
+      reset: () => (scenes.active as any)?.reset?.(),
     },
     state: () => {
-      const sim: Sim | null = (scenes.active as any)?.sim ?? null;
+      const s: Sim | null = (scenes.active as any)?.sim ?? null;
+      if (!s) return { scene: scenes.current };
+      const scent: Record<string, number> = {};
+      for (const z of s.layout.zones) scent[z.name] = +zoneScent(s, z.name).toFixed(4);
+      const open: Record<string, number> = {};
+      for (const a of s.layout.apertures) open[a.id] = +a.open.toFixed(2);
       return {
         scene: scenes.current,
-        laps: sim?.laps ?? 0,
-        t: sim ? +sim.t.toFixed(3) : 0,
-        x: sim ? +sim.mote.x.toFixed(3) : 0,
-        y: sim ? +sim.mote.y.toFixed(3) : 0,
-        seed: sim?.seed ?? '',
-        totalLaps: store.data.totalLaps,
+        t: +s.t.toFixed(2),
+        cells: s.W * s.H,
+        fans: s.fans.length,
+        unitOn: s.unitOn,
+        ventFaces: s.fixedFaces.length,
+        scent, open,
       };
     },
   });
 
   store.autosave(4000);
-  await scenes.go('menu', undefined, { transition: 'none' });
+  await scenes.go('play', undefined, { transition: 'none' });
   loop.start();
 }
 
