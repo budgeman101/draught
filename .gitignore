@@ -1,0 +1,12 @@
+node_modules/
+dist/
+shots/
+scratch/
+*.log
+.DS_Store
+test-results/
+playwright-report/
+.vite/
+
+# package-lock.json is COMMITTED on purpose — it's what makes a prototype from a
+# year ago still `npm ci` and run. Do not add it here.

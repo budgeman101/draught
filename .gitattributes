@@ -1,0 +1,12 @@
+# Normalise line endings so a Windows checkout never forks a file against itself.
+# (This is the thing that stopped the CRLF/LF drift last time — keep it.)
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.wav binary
+*.mp3 binary
+*.ogg binary
+*.woff2 binary
+
+package-lock.json -diff linguist-generated

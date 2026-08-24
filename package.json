@@ -1,0 +1,38 @@
+{
+  "name": "game-template",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Starting point for a Game Ideas browser prototype. Instantiate, don't fork.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "playwright test",
+    "shot": "node scripts/shot.mjs",
+    "share": "node scripts/share.mjs",
+    "refresh": "node scripts/refresh.mjs"
+  },
+  "dependencies": {
+    "howler": "^2.2.4",
+    "idb-keyval": "^6.3.0",
+    "pixi-viewport": "^6.0.3",
+    "pixi.js": "^8.19.0",
+    "tweakpane": "^4.0.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@tweakpane/core": "^2.0.5",
+    "@types/howler": "^2.2.13",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10"
+  }
+}

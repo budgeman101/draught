@@ -1,0 +1,264 @@
+/* theme.css — the look. THIS FILE IS MEANT TO DIVERGE PER GAME.
+
+   `npm run refresh` deliberately does NOT overwrite it: Dawnward's warm-industrial
+   schematic and Harbor's factory gauges should not converge on one house style.
+   Re-skin by overriding the variables below; only reach for the component rules
+   when a game needs a genuinely different shape.
+
+   Most widgets here are PLATFORM PRIMITIVES with styling on top — <dialog> is the
+   modal (backdrop and focus trap included), <details> is the collapsible panel,
+   <input type=range> is the slider. We only hand-build the four things the
+   platform has no answer for: stage overlays, the dial, the readout and the meter. */
+
+:root {
+  /* surfaces, back to front */
+  --kit-bg:        #080b11;
+  --kit-panel:     #0d121c;
+  --kit-panel-2:   #121a27;
+  --kit-edge:      #223047;
+  --kit-edge-soft: #18212f;
+
+  /* text, loud to quiet */
+  --kit-ink:   #ccd8ec;
+  --kit-dim:   #8493ae;
+  --kit-faint: #55627c;
+
+  /* meaning */
+  --kit-accent:    #4ea8de;
+  --kit-on-accent: #04121c;
+  --kit-good:      #6fd39b;
+  --kit-warn:      #f5c451;
+  --kit-danger:    #e5544b;
+
+  /* shape + motion */
+  --kit-radius: 4px;
+  --kit-gap:    8px;
+  --kit-pad:    10px;
+  --kit-dur:    140ms;
+  --kit-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+  --kit-focus:  0 0 0 2px color-mix(in srgb, var(--kit-accent) 55%, transparent);
+
+  /* type */
+  --kit-font:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --kit-mono:  ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --kit-fs:    13px;
+  --kit-fs-sm: 11px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  background: var(--kit-bg);
+  color: var(--kit-ink);
+  font: var(--kit-fs) / 1.45 var(--kit-font);
+  overscroll-behavior: none;          /* no pull-to-refresh mid-drag on mobile */
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── the canvas board + DOM chrome pattern ────────────────────────────────────
+   The canvas draws the BOARD — the world and the pieces. Everything with text on
+   it, or that you click, is DOM layered above. The browser already solves
+   hit-testing, focus, hover, text layout and keyboard access; hand-drawing UI
+   into a canvas means reimplementing all of it, badly, in every game.          */
+.kit-stage { position: relative; width: 100%; height: 100%; overflow: hidden; touch-action: none; }
+.kit-stage > canvas { display: block; width: 100%; height: 100%; }
+
+.kit-overlay {
+  position: absolute; z-index: 2; display: flex; flex-direction: column;
+  gap: var(--kit-gap); padding: max(var(--kit-pad), env(safe-area-inset-top)) var(--kit-pad);
+  pointer-events: none;               /* the layer never eats board input... */
+}
+.kit-overlay > * { pointer-events: auto; max-width: 100%; }   /* ...but its children are live */
+
+/* Opposing overlays must not collide on a narrow screen. Capping each at half
+   the width and letting rows wrap means top-left and top-right can touch but
+   never overlap — without either one knowing the other exists. */
+.kit-overlay { max-width: 50%; }
+.kit-overlay[data-at="center"] { max-width: 100%; }
+.kit-overlay[data-row] { flex-direction: row; align-items: center; flex-wrap: wrap; }
+.kit-overlay[data-at$="-right"][data-row] { justify-content: flex-end; }
+.kit-overlay[data-at="top-left"]     { top: 0; left: 0; }
+.kit-overlay[data-at="top-right"]    { top: 0; right: 0; align-items: flex-end; }
+.kit-overlay[data-at="bottom-left"]  { bottom: 0; left: 0; padding-bottom: max(var(--kit-pad), env(safe-area-inset-bottom)); }
+.kit-overlay[data-at="bottom-right"] { bottom: 0; right: 0; align-items: flex-end; padding-bottom: max(var(--kit-pad), env(safe-area-inset-bottom)); }
+.kit-overlay[data-at="center"]       { top: 50%; left: 50%; transform: translate(-50%, -50%); align-items: center; }
+
+/* ── buttons ──────────────────────────────────────────────────────────────────
+   SCOPED TO .kit-* ON PURPOSE. Styling bare `button` / `input` / `select` looks
+   tidier but leaks into any third-party DOM on the page — it washed out
+   Tweakpane's controls until this was scoped. Own your own widgets only.      */
+.kit-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  /* 40px min: a touch target you can actually hit on a phone */
+  padding: 8px 14px; min-height: 40px;
+  font: inherit; color: var(--kit-ink);
+  background: linear-gradient(180deg, var(--kit-panel-2), var(--kit-panel));
+  border: 1px solid var(--kit-edge); border-radius: var(--kit-radius);
+  cursor: pointer; user-select: none; white-space: nowrap;
+  transition: background var(--kit-dur), border-color var(--kit-dur), transform 60ms;
+}
+.kit-btn:hover:not(:disabled)  { border-color: color-mix(in srgb, var(--kit-accent) 50%, var(--kit-edge)); }
+.kit-btn:active:not(:disabled) { transform: translateY(1px); }
+.kit-btn:focus-visible         { outline: none; box-shadow: var(--kit-focus); }
+.kit-btn:disabled              { opacity: .42; cursor: not-allowed; }
+.kit-btn[data-variant="primary"] { background: var(--kit-accent); border-color: var(--kit-accent); color: var(--kit-on-accent); font-weight: 600; }
+.kit-btn[data-variant="ghost"]   { background: transparent; border-color: transparent; color: var(--kit-dim); }
+.kit-btn[data-variant="ghost"]:hover:not(:disabled) { color: var(--kit-ink); background: var(--kit-panel-2); }
+.kit-btn[data-variant="danger"]  { border-color: color-mix(in srgb, var(--kit-danger) 45%, var(--kit-edge)); color: var(--kit-danger); }
+.kit-btn.is-active { border-color: var(--kit-accent); color: var(--kit-accent); }
+
+/* ── labels + fields ──────────────────────────────────────────────────────── */
+.kit-field { display: flex; flex-direction: column; gap: 5px; width: 100%; }
+.kit-field-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--kit-gap); }
+.kit-label { color: var(--kit-dim); font-size: var(--kit-fs-sm); letter-spacing: .04em; text-transform: uppercase; }
+.kit-value { font-family: var(--kit-mono); font-variant-numeric: tabular-nums; color: var(--kit-ink); font-size: var(--kit-fs-sm); }
+
+/* ── slider: the platform's, restyled ─────────────────────────────────────── */
+.kit-slider {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 22px; background: transparent; cursor: pointer;
+}
+.kit-slider:focus-visible { outline: none; }
+.kit-slider::-webkit-slider-runnable-track {
+  height: 4px; border-radius: 2px;
+  background: linear-gradient(90deg, var(--kit-accent) var(--kit-fill, 50%), var(--kit-edge-soft) var(--kit-fill, 50%));
+}
+.kit-slider::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none; width: 14px; height: 14px; margin-top: -5px;
+  border-radius: 50%; background: var(--kit-ink); border: 2px solid var(--kit-bg);
+  box-shadow: 0 1px 3px rgba(0,0,0,.6);
+}
+.kit-slider::-moz-range-track    { height: 4px; border-radius: 2px; background: var(--kit-edge-soft); }
+.kit-slider::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--kit-accent); }
+.kit-slider::-moz-range-thumb    { width: 14px; height: 14px; border: 2px solid var(--kit-bg); border-radius: 50%; background: var(--kit-ink); }
+.kit-slider:focus-visible::-webkit-slider-thumb { box-shadow: var(--kit-focus); }
+
+/* ── checkbox as a switch ─────────────────────────────────────────────────── */
+.kit-toggle { display: flex; align-items: center; justify-content: space-between; gap: var(--kit-gap); cursor: pointer; min-height: 40px; }
+.kit-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+.kit-switch { position: relative; flex: 0 0 auto; width: 34px; height: 18px; border-radius: 9px; background: var(--kit-edge-soft); border: 1px solid var(--kit-edge); transition: background var(--kit-dur); }
+.kit-switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--kit-faint); transition: transform var(--kit-dur), background var(--kit-dur); }
+.kit-toggle input:checked + .kit-switch { background: color-mix(in srgb, var(--kit-accent) 35%, var(--kit-panel)); border-color: var(--kit-accent); }
+.kit-toggle input:checked + .kit-switch::after { transform: translateX(16px); background: var(--kit-accent); }
+.kit-toggle input:focus-visible + .kit-switch { box-shadow: var(--kit-focus); }
+
+.kit-select {
+  width: 100%; min-height: 40px; padding: 6px 8px; font: inherit;
+  color: var(--kit-ink); background: var(--kit-panel-2);
+  border: 1px solid var(--kit-edge); border-radius: var(--kit-radius); cursor: pointer;
+}
+.kit-select:focus-visible { outline: none; box-shadow: var(--kit-focus); }
+
+/* ── readout + meter (no platform equivalent) ─────────────────────────────── */
+.kit-readout {
+  display: inline-flex; align-items: baseline; gap: 7px; padding: 5px 9px;
+  background: color-mix(in srgb, var(--kit-panel) 82%, transparent);
+  border: 1px solid var(--kit-edge-soft); border-radius: var(--kit-radius);
+  backdrop-filter: blur(3px);
+}
+.kit-readout .kit-label { font-size: 9px; }
+.kit-readout .kit-value { font-size: var(--kit-fs); font-weight: 600; }
+.kit-readout[data-tone="good"]   .kit-value { color: var(--kit-good); }
+.kit-readout[data-tone="warn"]   .kit-value { color: var(--kit-warn); }
+.kit-readout[data-tone="danger"] .kit-value { color: var(--kit-danger); }
+
+.kit-meter-track { height: 6px; border-radius: 3px; background: var(--kit-edge-soft); overflow: hidden; }
+.kit-meter-fill  { height: 100%; width: 0; border-radius: 3px; background: var(--kit-accent); transition: width var(--kit-dur) linear, background var(--kit-dur); }
+.kit-meter[data-tone="good"]   .kit-meter-fill { background: var(--kit-good); }
+.kit-meter[data-tone="warn"]   .kit-meter-fill { background: var(--kit-warn); }
+.kit-meter[data-tone="danger"] .kit-meter-fill { background: var(--kit-danger); }
+
+/* ── dial (no platform equivalent) ────────────────────────────────────────── */
+.kit-dial { display: inline-flex; flex-direction: column; align-items: center; gap: 3px; user-select: none; }
+.kit-dial svg { display: block; cursor: ns-resize; touch-action: none; }
+.kit-dial:focus-visible { outline: none; }
+.kit-dial:focus-visible svg { filter: drop-shadow(0 0 3px var(--kit-accent)); }
+.kit-dial-track  { stroke: var(--kit-edge-soft); }
+.kit-dial-fill   { stroke: var(--kit-accent); }
+.kit-dial-needle { stroke: var(--kit-ink); }
+.kit-dial-hub    { fill: var(--kit-panel-2); stroke: var(--kit-edge); }
+
+/* ── panel via <details> ──────────────────────────────────────────────────── */
+.kit-panel {
+  background: color-mix(in srgb, var(--kit-panel) 92%, transparent);
+  border: 1px solid var(--kit-edge); border-radius: var(--kit-radius);
+  backdrop-filter: blur(4px);
+}
+.kit-panel > summary {
+  padding: 8px var(--kit-pad); cursor: pointer; list-style: none;
+  font-size: var(--kit-fs-sm); letter-spacing: .07em; text-transform: uppercase; color: var(--kit-dim);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.kit-panel > summary::-webkit-details-marker { display: none; }
+.kit-panel > summary::after { content: '▾'; font-size: 9px; color: var(--kit-faint); transition: transform var(--kit-dur); }
+.kit-panel:not([open]) > summary::after { transform: rotate(-90deg); }
+.kit-panel > summary:hover { color: var(--kit-ink); }
+.kit-panel[open] > summary { border-bottom: 1px solid var(--kit-edge-soft); }
+.kit-panel-body { display: flex; flex-direction: column; gap: var(--kit-gap); padding: var(--kit-pad); }
+.kit-panel[data-plain] > summary { display: none; }
+
+/* ── modal via <dialog>: backdrop, focus trap and Escape come free ────────── */
+dialog {
+  padding: 0; max-width: min(560px, 92vw); max-height: 86vh;
+  color: var(--kit-ink); background: var(--kit-panel);
+  border: 1px solid var(--kit-edge); border-radius: calc(var(--kit-radius) * 1.5);
+  box-shadow: var(--kit-shadow);
+}
+dialog::backdrop { background: rgba(2, 4, 8, .68); backdrop-filter: blur(2px); }
+dialog .kit-modal-head { padding: 12px 16px; border-bottom: 1px solid var(--kit-edge-soft); font-weight: 600; }
+dialog .kit-modal-body { padding: 16px; display: flex; flex-direction: column; gap: var(--kit-gap); color: var(--kit-dim); }
+dialog .kit-modal-foot { padding: 12px 16px; border-top: 1px solid var(--kit-edge-soft); display: flex; gap: var(--kit-gap); justify-content: flex-end; }
+
+/* ── toast ────────────────────────────────────────────────────────────────── */
+.kit-toast-host { position: fixed; z-index: 950; bottom: max(20px, env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; }
+.kit-toast { padding: 9px 15px; background: var(--kit-panel-2); border: 1px solid var(--kit-edge); border-left: 3px solid var(--kit-accent); border-radius: var(--kit-radius); box-shadow: var(--kit-shadow); transition: opacity var(--kit-dur), transform var(--kit-dur); }
+.kit-toast[data-tone="good"]   { border-left-color: var(--kit-good); }
+.kit-toast[data-tone="warn"]   { border-left-color: var(--kit-warn); }
+.kit-toast[data-tone="danger"] { border-left-color: var(--kit-danger); }
+.kit-toast.is-out { opacity: 0; transform: translateY(6px); }
+
+/* ── scenes ───────────────────────────────────────────────────────────────────
+   Each scene gets its own absolutely-positioned DOM layer over the board.
+   pointer-events: none on the layer so an empty scene never blocks the canvas;
+   its children opt back in, same rule as overlays.                            */
+.kit-scene { position: absolute; inset: 0; pointer-events: none; }
+.kit-scene > * { pointer-events: auto; }
+.kit-scene.kit-t-fade,
+.kit-scene.kit-t-slide-left,
+.kit-scene.kit-t-slide-up { transition: opacity var(--kit-scene-ms, 200ms) ease, transform var(--kit-scene-ms, 200ms) ease; }
+
+.kit-scene-in.kit-t-fade,
+.kit-scene-out.kit-t-fade       { opacity: 0; }
+.kit-scene-in.kit-t-slide-left  { opacity: 0; transform: translateX(24px); }
+.kit-scene-out.kit-t-slide-left { opacity: 0; transform: translateX(-24px); }
+.kit-scene-in.kit-t-slide-up    { opacity: 0; transform: translateY(20px); }
+.kit-scene-out.kit-t-slide-up   { opacity: 0; transform: translateY(-20px); }
+
+/* ── the inspector's home ─────────────────────────────────────────────────────
+   Offset below the top bar so the dev panel never sits on top of the game's own
+   top-right chrome, and hidden by default on a phone, where it would otherwise
+   swallow most of the screen. Toggle with ` .                                  */
+.kit-inspector {
+  position: fixed; z-index: 800; top: 56px; right: 10px; width: 280px;
+  max-height: calc(100vh - 76px); overflow-y: auto;
+}
+.kit-inspector.is-hidden { display: none; }
+
+/* ── the dev error banner ─────────────────────────────────────────────────────
+   A crashed canvas game looks exactly like a healthy paused one. This makes the
+   difference impossible to miss.                                              */
+.kit-error {
+  position: fixed; z-index: 9999; inset: 0 0 auto 0;
+  padding: 10px 14px; max-height: 45vh; overflow: auto;
+  font-family: var(--kit-mono); font-size: 12px; line-height: 1.5;
+  color: #ffd9d5; background: #40100c; border-bottom: 2px solid var(--kit-danger);
+  white-space: pre-wrap;
+}
+.kit-error b { color: #fff; }
+.kit-error button { position: absolute; top: 6px; right: 8px; min-height: 26px; padding: 2px 8px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 1ms !important; animation-duration: 1ms !important; }
+}

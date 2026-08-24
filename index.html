@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- viewport-fit=cover + the safe-area insets in theme.css keep chrome clear of
+       the notch and the home indicator on a phone -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>game-template</title>
+</head>
+<body>
+  <!-- the stage wrapper is created by chrome.ts stage(); #app just needs to fill
+       the viewport and be a positioning context for overlays -->
+  <div id="app" style="position:relative;width:100vw;height:100dvh;overflow:hidden"></div>
+  <script type="module" src="/src/game/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "node"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    /* The loose half of the deal: a throwaway spike can be plain .js in the same
+       project without TypeScript having an opinion about it. ★ builds get the
+       safety net; art-gate spikes get out of the way. */
+    "allowJs": true,
+    "checkJs": false,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src", "tests", "vite.config.ts", "playwright.config.ts"]
+}
