@@ -1,42 +1,57 @@
-/* sim.test.ts — the air, checked with no browser at all.
+/* sim.test.ts — the puffs, checked with no browser at all.
 
-   These are not "does it run" tests. Each one is a claim the design rests on,
-   and the reason they can be written at all is that sim.ts and fluid.ts have no
-   DOM in them:
+   The first test is the one that matters most, and it is the one the previous
+   build FAILED: an endless source in a shut house, given time, has to reach
+   every room a door lets it into. A model that cannot do that is wrong, not
+   under-tuned — and the fluid solver this replaced could not do it at all,
+   because incompressible flow puts exactly zero net air through a dead-end
+   doorway.
 
-     - a shut house does not leak;
-     - opening a ROUTE (not just a door) carries scent across the house;
-     - a narrow gap accelerates the air and a wide one does not — the whole
-       reason a door is a span of cells rather than a permeability number;
-     - openness is geometry, and the gap is at the latch end, not the hinge.
+   A SMALLER POOL than the game runs, so the suite finishes: the pool doubles as
+   the puff lifetime (pool / emitRate seconds), so every threshold below is for
+   THIS configuration. They are written as comparisons between runs wherever
+   possible, so the shape of the claim survives the resizing even where an
+   absolute number would not.
 
    Run: npm test */
 
 import { beforeAll, describe, expect, it } from 'vitest';
 import { CFG } from '../src/game/cfg.js';
-import { totalDivergence } from '../src/game/fluid.js';
 import { apertureRect } from '../src/game/layout.js';
 import {
-  apertureFlux, apertureSpeed, applyApertures, createSim, cycleFan, setApertureOpen, tick,
-  toCellX, toCellY, zoneScent, type Sim,
+  applyApertures, createSim, cycleFan, read, setApertureOpen, tick, toCellX, toCellY,
+  worstShare, type Dir, type Sim,
 } from '../src/game/sim.js';
 
-/* A coarser grid than the game runs at, so the suite stays quick. Everything
-   under test is geometry and flow, both of which survive the resolution change;
-   what would NOT survive is a claim about a gap finer than a cell, and no test
-   here makes one. */
-beforeAll(() => { CFG.cell = 0.14; });
+beforeAll(() => { CFG.particles = 3000; CFG.emitRate = 40; });
 
-/* the same dt the game runs at, so a threshold measured here means the same
-   thing on screen */
-const run = (s: Sim, ticks: number, dt = 1 / CFG.simHz) => { for (let i = 0; i < ticks; i++) tick(s, dt); return s; };
+const DOORS = ['d-living', 'd-bed', 'd-study', 'd-kitchen', 'd-bath'];
 
-const shutEverything = (s: Sim) => {
-  for (const a of s.layout.apertures) a.open = 0;
-  applyApertures(s);
+const run = (s: Sim, secs: number) => {
+  const n = Math.round(secs * CFG.simHz);
+  for (let i = 0; i < n; i++) tick(s, 1 / CFG.simHz);
+  return s;
 };
 
-/** Non-solid cells across an aperture's span, on its centre line. */
+/** A house with everything shut, then whatever the caller opens. */
+function build(f: (s: Sim) => void, secs = 90, seed = 'test'): Sim {
+  const s = createSim(seed);
+  for (const a of s.layout.apertures) a.open = 0;
+  applyApertures(s);
+  f(s);
+  return run(s, secs);
+}
+
+const openAllDoors = (s: Sim) => { for (const d of DOORS) setApertureOpen(s, d, 1); };
+const fan = (s: Sim, x: number, y: number, dir: Dir) => {
+  cycleFan(s, x, y);
+  const f = s.fans[s.fans.length - 1];
+  if (f) f.dir = dir;
+};
+const share = (s: Sim, name: string) =>
+  read(s).fairness[s.layout.zones.findIndex((z) => z.name === name)]!;
+
+/** Non-solid cells across an aperture's span, along its centre line. */
 function openCellsAcross(s: Sim, id: string): number[] {
   const a = s.layout.apertures.find((q) => q.id === id)!;
   const r = apertureRect(a);
@@ -44,132 +59,87 @@ function openCellsAcross(s: Sim, id: string): number[] {
   if (a.axis === 'h') {
     const j = Math.floor(toCellY(s, a.at));
     for (let i = Math.floor(toCellX(s, r.x0)); i < Math.ceil(toCellX(s, r.x1)); i++) {
-      if (!s.f.solid[i + j * s.W]) out.push(i);
+      if (!s.solid[i + j * s.W]) out.push(i);
     }
   } else {
     const i = Math.floor(toCellX(s, a.at));
     for (let j = Math.floor(toCellY(s, r.y0)); j < Math.ceil(toCellY(s, r.y1)); j++) {
-      if (!s.f.solid[i + j * s.W]) out.push(j);
+      if (!s.solid[i + j * s.W]) out.push(j);
     }
   }
   return out;
 }
 
-describe('the house', () => {
-  it('rasterises into indoors, outdoors and walls', () => {
-    const s = createSim();
-    let inside = 0, outside = 0, wall = 0;
-    for (let c = 0; c < s.W * s.H; c++) {
-      if (s.baseSolid[c]) wall++;
-      else if (s.outside[c]) outside++;
-      else inside++;
-    }
-    expect(wall).toBeGreaterThan(0);
-    expect(outside).toBeGreaterThan(0);
-    expect(inside).toBeGreaterThan(0);
-    // the six rooms are the bulk of the plan, the margin is a border
-    expect(inside).toBeGreaterThan(outside * 0.5);
+/* The three runs everything else reads. Built once — each is a minute and a half
+   of simulated house and there is no reason to pay for it six times. */
+let shutHouse: Sim, openHouse: Sim, fannedHouse: Sim;
+
+beforeAll(() => {
+  shutHouse = build(() => {});
+  openHouse = build(openAllDoors);
+  fannedHouse = build((s) => {
+    openAllDoors(s);
+    fan(s, 3.60, 4.00, 0);
+    fan(s, 7.20, 4.00, 0);
+  });
+}, 300_000);
+
+describe('the thing the last model could not do', () => {
+  it('reaches every room a door lets it into', () => {
+    /* THE INVARIANT, and it is a STRUCTURAL claim: with the doors open there is
+       no room the scent cannot get to. The magnitudes here are small because the
+       suite runs a third of the game's pool, and the pool is also the puff
+       lifetime — at the shipping numbers the far rooms settle around 6% of fair
+       share with no fans and 45-60% with two. What is being checked is that the
+       floor is not ZERO, which is exactly what the fluid solver could not manage
+       however long it ran. */
+    const open = read(openHouse), sealed = read(shutHouse);
+    openHouse.layout.zones.forEach((z, k) => {
+      expect(open.counts[k]!, `${z.name} got nothing`).toBeGreaterThan(0);
+      expect(open.fairness[k]!, `${z.name} barely registered`).toBeGreaterThan(0.003);
+    });
+    // and every one of them beats the same room with the doors shut
+    ['Bedroom', 'Study', 'Kitchen', 'Bathroom', 'Hall'].forEach((name) => {
+      const k = openHouse.layout.zones.findIndex((z) => z.name === name);
+      expect(open.counts[k]!, name).toBeGreaterThan(sealed.counts[k]!);
+    });
+    expect(open.total).toBeGreaterThan(CFG.particles * 0.9);
   });
 
-  it('gives the supply a prescribed inflow and the air somewhere to go', () => {
-    const s = createSim();
-    // one prescribed face per supply cell, all of them on the west side
-    expect(s.fixedFaces.length).toBeGreaterThan(0);
-    expect(s.fixedFaces.every((f) => f.value > 0 && f.i < s.W / 2)).toBe(true);
-    expect(s.supplyCells.length).toBe(s.fixedFaces.length);
-
-    // and open boundaries exist: the far outdoors, and the extract in the hall
-    let rim = 0, extract = 0;
-    for (let j = 0; j < s.H; j++) {
-      for (let i = 0; i < s.W; i++) {
-        if (!s.f.open[i + j * s.W]) continue;
-        if (i < 3 || j < 3 || i >= s.W - 3 || j >= s.H - 3) rim++;
-        else extract++;
-      }
+  it('and does not, through a shut door', () => {
+    for (const name of ['Bedroom', 'Study', 'Kitchen', 'Bathroom', 'Hall']) {
+      expect(share(shutHouse, name), `${name} leaked`).toBeLessThan(0.01);
     }
-    expect(rim).toBeGreaterThan(0);
-    expect(extract).toBeGreaterThan(0);
+    // it all piles up where it is made
+    expect(share(shutHouse, 'Living room')).toBeGreaterThan(2);
   });
 });
 
-describe('the solve', () => {
-  it('leaves the air very nearly divergence-free', () => {
-    const s = createSim();
-    setApertureOpen(s, 'd-living', 1);
-    setApertureOpen(s, 'd-bed', 1);
-    cycleFan(s, 2.2, 4.0);
-    run(s, 120);
-
-    let fluid = 0;
-    for (let c = 0; c < s.W * s.H; c++) if (!s.f.solid[c]) fluid++;
-    const perCell = totalDivergence(s.f) / fluid;
-    // m/s per metre. Air moves at ~1-3 m/s over 0.14m cells, so anything this
-    // small is the solver having genuinely closed the books.
-    expect(perCell).toBeLessThan(0.02);
-  });
-});
-
-describe('routing', () => {
-  it('keeps the scent where it is put when every door is shut', () => {
-    const s = createSim();
-    shutEverything(s);
-    run(s, 450);
-    expect(zoneScent(s, 'Living room')).toBeGreaterThan(0.02);
-    expect(zoneScent(s, 'Bedroom')).toBeLessThan(0.002);
-    expect(zoneScent(s, 'Bathroom')).toBeLessThan(0.002);
+describe('the verbs do something', () => {
+  it('fans even the house out — that is the whole game', () => {
+    expect(worstShare(fannedHouse)).toBeGreaterThan(worstShare(openHouse) * 2.5);
+    // and they take it FROM the room that had too much
+    expect(share(fannedHouse, 'Living room')).toBeLessThan(share(openHouse, 'Living room'));
   });
 
-  it('needs a DESTINATION, not just an open door', () => {
-    /* The lesson the whole model turns on. A door into a dead-end room moves
-       almost nothing however wide it is, because the air has nowhere to go once
-       it is in there. Open that room's window and the same door becomes a route. */
-    const doorOnly = createSim();
-    shutEverything(doorOnly);
-    setApertureOpen(doorOnly, 'd-living', 1);
-    setApertureOpen(doorOnly, 'd-bed', 1);
-    run(doorOnly, 600);
-
-    const route = createSim();
-    shutEverything(route);
-    setApertureOpen(route, 'd-living', 1);
-    setApertureOpen(route, 'd-bed', 1);
-    setApertureOpen(route, 'w-bed', 1);
-    run(route, 600);
-
-    expect(zoneScent(doorOnly, 'Bedroom')).toBeLessThan(0.03);
-    expect(zoneScent(route, 'Bedroom')).toBeGreaterThan(0.08);
-    expect(Math.abs(apertureFlux(doorOnly, 'd-bed'))).toBeLessThan(0.05);
-    expect(Math.abs(apertureFlux(route, 'd-bed'))).toBeGreaterThan(0.4);
+  it('a cracked door passes less than a wide one', () => {
+    const crack = build((s) => { openAllDoors(s); setApertureOpen(s, 'd-bed', 0.15); });
+    expect(share(crack, 'Bedroom')).toBeLessThan(share(openHouse, 'Bedroom') * 0.7);
   });
 
-  it('makes routes compete: a second one open leaves less for the first', () => {
-    const alone = createSim();
-    shutEverything(alone);
-    setApertureOpen(alone, 'd-living', 1);
-    setApertureOpen(alone, 'd-bath', 1);
-    setApertureOpen(alone, 'w-bath', 1);
-    run(alone, 600);
-
-    const shared = createSim();
-    shutEverything(shared);
-    setApertureOpen(shared, 'd-living', 1);
-    setApertureOpen(shared, 'd-bath', 1);
-    setApertureOpen(shared, 'w-bath', 1);
-    setApertureOpen(shared, 'd-bed', 1);
-    setApertureOpen(shared, 'w-bed', 1);
-    run(shared, 600);
-
-    expect(Math.abs(apertureFlux(shared, 'd-bath')))
-      .toBeLessThan(Math.abs(apertureFlux(alone, 'd-bath')));
+  it('an open window is a way out, not a way through', () => {
+    const leaky = build((s) => { openAllDoors(s); setApertureOpen(s, 'w-bed', 1); });
+    expect(read(leaky).total).toBeLessThan(read(openHouse).total);
+    expect(share(leaky, 'Bedroom')).toBeLessThan(share(openHouse, 'Bedroom'));
   });
 });
 
 describe('a door is a span of cells, not a dimmer switch', () => {
   it('opens proportionally, from the latch end', () => {
     const s = createSim();
-    shutEverything(s);
+    for (const a of s.layout.apertures) a.open = 0;
+    applyApertures(s);
 
-    setApertureOpen(s, 'd-bed', 0);
     expect(openCellsAcross(s, 'd-bed').length).toBe(0);
 
     setApertureOpen(s, 'd-bed', 0.5);
@@ -178,40 +148,36 @@ describe('a door is a span of cells, not a dimmer switch', () => {
     const full = openCellsAcross(s, 'd-bed');
 
     expect(half.length).toBeGreaterThan(0);
-    expect(full.length).toBeGreaterThan(half.length);
-    expect(half.length / full.length).toBeGreaterThan(0.3);
-    expect(half.length / full.length).toBeLessThan(0.75);
+    expect(half.length / full.length).toBeGreaterThan(0.35);
+    expect(half.length / full.length).toBeLessThan(0.7);
 
-    // d-bed hinges 'lo', so the gap must sit at the HIGH end of the span
+    // d-bed hinges 'lo', so the gap sits at the HIGH end of the span
     expect(Math.max(...half)).toBe(Math.max(...full));
     expect(Math.min(...half)).toBeGreaterThan(Math.min(...full));
   });
 
-  it('speeds the air up as the gap narrows, while passing less of it', () => {
-    const route = (bedDoor: number) => {
-      const s = createSim();
-      shutEverything(s);
-      setApertureOpen(s, 'd-living', 1);
-      setApertureOpen(s, 'w-bed', 1);
-      setApertureOpen(s, 'd-bed', bedDoor);
-      run(s, 600);
-      return { speed: apertureSpeed(s, 'd-bed'), flux: Math.abs(apertureFlux(s, 'd-bed')) };
-    };
+  it('blocks a puff with a shut door and passes it through an open one', () => {
+    const s = createSim();
+    for (const a of s.layout.apertures) a.open = 0;
+    applyApertures(s);
+    const inDoorway = { x: 4.40, y: 4.00 };          // the living room doorway
+    expect(s.solid[Math.floor(toCellX(s, inDoorway.x)) + Math.floor(toCellY(s, inDoorway.y)) * s.W]).toBe(1);
+    setApertureOpen(s, 'd-living', 1);
+    expect(s.solid[Math.floor(toCellX(s, inDoorway.x)) + Math.floor(toCellY(s, inDoorway.y)) * s.W]).toBe(0);
+  });
+});
 
-    const crack = route(0.15);
-    const half = route(0.5);
-    const wide = route(1);
+describe('runs are reproducible', () => {
+  it('same seed, same house, same answer', () => {
+    const a = build(openAllDoors, 20, 'repeat');
+    const b = build(openAllDoors, 20, 'repeat');
+    expect(read(a).counts).toEqual(read(b).counts);
+  });
 
-    /* THE THING A PERMEABILITY MULTIPLIER CANNOT DO. Shrinking the hole makes
-       the air move FASTER through it even as it passes LESS of it — because the
-       gap is real geometry, not a dimmer on the flow. A multiplier would drop
-       both together and the two openings would differ only in brightness.
-
-       Note what is NOT claimed: that the faster air therefore reaches further
-       into the room. It measurably does not — see the README. */
-    expect(crack.speed).toBeGreaterThan(wide.speed * 1.15);
-    expect(half.speed).toBeGreaterThan(wide.speed);
-    expect(crack.flux).toBeLessThan(half.flux);
-    expect(half.flux).toBeLessThan(wide.flux);
+  it('a different seed gives a different arrangement of the same picture', () => {
+    const a = build(openAllDoors, 20, 'seed-a');
+    const b = build(openAllDoors, 20, 'seed-b');
+    expect(read(a).counts).not.toEqual(read(b).counts);
+    expect(read(a).total).toBeCloseTo(read(b).total, -2);   // same ballpark
   });
 });

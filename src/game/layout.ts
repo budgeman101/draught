@@ -35,21 +35,18 @@ export interface Aperture {
   open: number;
 }
 
-/** The two fixed holes in the house.
+/** The unit: a grille on a wall that throws puffs into the room.
 
-    `supply` is a prescribed inflow: the unit, pushing air in at a set speed.
-    `extract` is a permanent opening onto an open boundary — air leaves there at
-    whatever rate the rest of the house allows, and it is the reason there is
-    always somewhere for the supply's air to GO. */
-export interface Vent {
+    Nothing more. An earlier build modelled its intake as well, and then a duct,
+    and then a coil — none of which the question needs. It emits. */
+export interface Emitter {
   id: string;
   label: string;
-  role: 'supply' | 'extract';
   axis: Axis;
   at: number;
   from: number;
   to: number;
-  /** Which way the air crosses the face: +1 = towards +x (or +y), -1 = back. */
+  /** Which way it faces: +1 towards +x (or +y), -1 back. */
   dir: 1 | -1;
 }
 
@@ -62,7 +59,7 @@ export interface Layout {
   height: number;
   walls: Wall[];
   apertures: Aperture[];
-  vents: Vent[];
+  emitters: Emitter[];
   zones: Zone[];
 }
 
@@ -91,7 +88,7 @@ export function house(): Layout {
 
   const apertures: Aperture[] = [
     { id: 'd-living', label: 'Living room door', kind: 'door', axis: 'v', at: 4.40,
-      from: 3.60, to: 4.40, thickness: INT, hinge: 'lo', open: 1 },
+      from: 3.60, to: 4.40, thickness: INT, hinge: 'lo', open: 0 },
     { id: 'd-bed', label: 'Bedroom door', kind: 'door', axis: 'h', at: 3.40,
       from: 5.60, to: 6.40, thickness: INT, hinge: 'lo', open: 0 },
     { id: 'd-study', label: 'Study door', kind: 'door', axis: 'h', at: 3.40,
@@ -113,19 +110,9 @@ export function house(): Layout {
       from: 10.00, to: 11.20, thickness: EXT, hinge: 'hi', open: 0 },
   ];
 
-  /* The unit blows into the living room; the extract sits at the far end of the
-     hall. They are apart on purpose — put them side by side and the air
-     short-circuits straight back out without visiting the house at all.
-
-     The extract is what makes routing a thing you can DO. With the supply as the
-     only hole, a sealed house has nowhere to put the air; with an extract always
-     open, there is a default route (living room -> hall -> out) that every door
-     and window you open then competes with. */
-  const vents: Vent[] = [
-    { id: 'v-supply', label: 'The unit', role: 'supply', axis: 'v', at: e,
-      from: 0.80, to: 1.70, dir: 1 },
-    { id: 'v-extract', label: 'Extract', role: 'extract', axis: 'v', at: W - e,
-      from: 3.70, to: 4.30, dir: 1 },
+  /* One unit, high on the living room's west wall, blowing east across it. */
+  const emitters: Emitter[] = [
+    { id: 'unit', label: 'The unit', axis: 'v', at: e, from: 1.05, to: 1.95, dir: 1 },
   ];
 
   const zones: Zone[] = [
@@ -137,7 +124,7 @@ export function house(): Layout {
     { name: 'Bathroom',    x0: 8.06, y0: 4.66, x1: 11.76, y1: 7.76 },
   ];
 
-  return { width: W, height: H, walls, apertures, vents, zones };
+  return { width: W, height: H, walls, apertures, emitters, zones };
 }
 
 export interface Rect { x0: number; y0: number; x1: number; y1: number }
@@ -189,9 +176,9 @@ export function distanceToAperture(a: Aperture, x: number, y: number): number {
   return Math.hypot(dx, dy);
 }
 
-/** The rectangle a vent's face occupies, for drawing and for the solver. */
-export function ventRect(v: Vent): Rect {
-  const t = 0.14;
+/** The rectangle the unit's grille occupies, for drawing and for spawning. */
+export function emitterRect(v: Emitter): Rect {
+  const t = 0.13;
   return v.axis === 'h'
     ? { x0: v.from, y0: v.at - t, x1: v.to, y1: v.at + t }
     : { x0: v.at - t, y0: v.from, x1: v.at + t, y1: v.to };

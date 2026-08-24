@@ -9,44 +9,50 @@
 import { expect, test } from '@playwright/test';
 
 const HOME = './?nosync=1';
+const DOORS = ['d-living', 'd-bed', 'd-study', 'd-kitchen', 'd-bath'];
 
-/** Boot, then get to a reset board with the clock stopped. */
 async function toPlay(page: import('@playwright/test').Page) {
   await page.goto(HOME);
   await page.waitForFunction(() => window.DBG?.ready === true, null, { timeout: 20_000 });
   await page.evaluate(async () => {
     await (window.DBG as any).scenes.settled();
     window.DBG!.pause(true);
-    (window.DBG as any).reset();
+    (window.DBG as any).reset('e2e');
     (window.DBG as any).inspector?.show(false);
   });
 }
 
-test('boots, runs deterministically, and paints the plume', async ({ page }, testInfo) => {
+/** Open every interior door, run for `secs`, hand back the state. */
+async function settle(page: import('@playwright/test').Page, secs: number, doors = DOORS) {
+  return page.evaluate(({ list, n }) => {
+    for (const d of list) (window.DBG as any).open(d, 1);
+    window.DBG!.step(n);
+    return window.DBG!.state();
+  }, { list: doors, n: secs * 60 }) as Promise<any>;
+}
+
+test('boots, runs deterministically, and paints the puffs', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
   page.on('pageerror', (e) => errors.push(String(e)));
 
   await toPlay(page);
-
-  const state = await page.evaluate(() => { window.DBG!.step(600); return window.DBG!.state(); }) as any;
+  const state = await settle(page, 60);
 
   expect(state.scene).toBe('play');
-  expect(state.cells).toBeGreaterThan(5000);
-  expect(state.ventFaces).toBeGreaterThan(0);
-  // 20s of air: out of the unit, across the living room, down the hall
-  expect(state.scent['Living room']).toBeGreaterThan(0.05);
-  expect(state.scent['Hall']).toBeGreaterThan(0.05);
-  // and nowhere the doors do not go
-  expect(state.scent['Study']).toBeLessThan(0.005);
+  expect(state.puffs).toBeGreaterThan(1000);
+  expect(state.share['Living room']).toBeGreaterThan(1);   // more than its share
+  expect(state.share['Hall']).toBeGreaterThan(0.02);
 
-  // the same reset and the same steps give the same air, to the last digit
-  const again = await page.evaluate(() => {
-    (window.DBG as any).reset();
-    window.DBG!.step(600);
+  // same reset, same steps, same houseful of puffs — down to the count
+  const again = await page.evaluate(async () => {
+    (window.DBG as any).reset('e2e');
+    for (const d of ['d-living', 'd-bed', 'd-study', 'd-kitchen', 'd-bath']) (window.DBG as any).open(d, 1);
+    window.DBG!.step(3600);
     return window.DBG!.state();
   }) as any;
-  expect(again.scent['Hall']).toBe(state.scent['Hall']);
+  expect(again.puffs).toBe(state.puffs);
+  expect(again.share['Hall']).toBe(state.share['Hall']);
 
   // the HUD is DOM, so it can be READ rather than squinted at in pixels
   await expect(page.locator('.kit-meter').first()).toContainText('%');
@@ -62,21 +68,39 @@ test('boots, runs deterministically, and paints the plume', async ({ page }, tes
   expect(errors, `console errors:\n${errors.join('\n')}`).toEqual([]);
 });
 
-test('opening a route moves the air, and shutting it stops it', async ({ page }) => {
+test('a shut house keeps it all in one room; open doors let it out', async ({ page }) => {
   await toPlay(page);
 
-  const shut = await page.evaluate(() => { window.DBG!.step(600); return window.DBG!.state(); }) as any;
-  expect(shut.scent['Bathroom']).toBeLessThan(0.005);
-
-  const open = await page.evaluate(() => {
-    (window.DBG as any).reset();
-    (window.DBG as any).open('d-bath', 1);
-    (window.DBG as any).open('w-bath', 1);
-    window.DBG!.step(600);
+  const shut = await page.evaluate(() => {
+    for (const d of ['d-living', 'd-bed', 'd-study', 'd-kitchen', 'd-bath']) (window.DBG as any).open(d, 0);
+    window.DBG!.step(3600);
     return window.DBG!.state();
   }) as any;
-  expect(open.scent['Bathroom']).toBeGreaterThan(0.03);
-  expect(open.open['d-bath']).toBe(1);
+  expect(shut.share['Living room']).toBeGreaterThan(2);
+  expect(shut.share['Bathroom']).toBeLessThan(0.01);
+
+  await page.evaluate(() => (window.DBG as any).reset('e2e'));
+  const open = await settle(page, 60);
+  expect(open.share['Living room']).toBeLessThan(shut.share['Living room']);
+  expect(open.share['Hall']).toBeGreaterThan(shut.share['Hall']);
+});
+
+test('fans even the house out', async ({ page }) => {
+  await toPlay(page);
+  const bare = await settle(page, 90);
+
+  await page.evaluate(() => (window.DBG as any).reset('e2e'));
+  const fanned = await page.evaluate(() => {
+    for (const d of ['d-living', 'd-bed', 'd-study', 'd-kitchen', 'd-bath']) (window.DBG as any).open(d, 1);
+    (window.DBG as any).fan(3.6, 4.0);
+    (window.DBG as any).fan(7.2, 4.0);
+    window.DBG!.step(5400);
+    return window.DBG!.state();
+  }) as any;
+
+  expect(fanned.fans).toBe(2);
+  expect(fanned.worst).toBeGreaterThan(bare.worst * 2);
+  expect(fanned.share['Living room']).toBeLessThan(bare.share['Living room']);
 });
 
 test('a fan is placed, turned, and taken away by clicking one spot', async ({ page }) => {
